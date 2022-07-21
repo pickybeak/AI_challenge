@@ -12,23 +12,17 @@ import pickle
 
 from tqdm import tqdm
 from sklearn.metrics import f1_score
+
 import warnings
 warnings.filterwarnings(action='ignore')
 
 from modules import LSTMNet
 
-torch.cuda.is_available()
-
-device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-
-embed = np.load('embed_matrix_1900.npy')
-embed = np.concatenate((embed, np.expand_dims(np.zeros(embed.shape[1]),axis=0)), axis=0)
-
 CFG = {
     'NUM_WORKERS':0,
     'ANTIGEN_WINDOW':64,
     'ANTIGEN_MAX_LEN':64, # ANTIGEN_WINDOW와 ANTIGEN_MAX_LEN은 같아야합니다.
-    'EPITOPE_MAX_LEN':25,
+    'EPITOPE_MAX_LEN':80,
     'EPOCHS':100000,
     'LEARNING_RATE':1e-3,
     'BATCH_SIZE':1024,
@@ -37,17 +31,6 @@ CFG = {
     'PATIENCE':20
 }
 
-def seed_everything(seed):
-    random.seed(seed)
-    os.environ['PYTHONHASHSEED'] = str(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = True
-
-seed_everything(CFG['SEED']) # Seed 고정
-
 alpha_map = {
     'A': 0, 'B': 1, 'C': 2, 'D': 3, 'E': 4, 'F': 5,
     'G': 6, 'H': 7, 'I': 8, 'J': 9, 'K': 10, 'L': 11,
@@ -55,6 +38,11 @@ alpha_map = {
     'S': 18, 'T': 19, 'U': 20, 'V': 21, 'W': 22, 'X': 23,
     'Y': 24, 'Z': 25, '<PAD>': 26,
 }
+
+device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+
+embed = np.load('embed_matrix_1900.npy')
+embed = np.concatenate((embed, np.expand_dims(np.zeros(embed.shape[1]),axis=0)), axis=0)
 
 def get_custom_preprocessing(data_type, new_df):
     epitope_list = []
@@ -119,118 +107,6 @@ def get_custom_preprocessing(data_type, new_df):
     print(f'{data_type} dataframe preprocessing was done.')
     return epitope_list, left_antigen_list, right_antigen_list, total_antigen_list, label_list
 
-def get_preprocessing(data_type, new_df):
-
-    epitope_list = []
-    left_antigen_list = []
-    right_antigen_list = []
-
-    for epitope, antigen, s_p, e_p in tqdm(
-            zip(new_df['epitope_seq'], new_df['antigen_seq'], new_df['start_position'], new_df['end_position'])):
-        epitope_pad = [26 for _ in range(CFG['EPITOPE_MAX_LEN'])]
-        left_antigen_pad = [26 for _ in range(CFG['ANTIGEN_MAX_LEN'])]
-        right_antigen_pad = [26 for _ in range(CFG['ANTIGEN_MAX_LEN'])]
-
-        epitope = [alpha_map[x] for x in epitope]
-
-        # Left antigen : [start_position-WINDOW : start_position]
-        # Right antigen : [end_position : end_position+WINDOW]
-
-        start_position = s_p - CFG['ANTIGEN_WINDOW'] - 1
-        end_position = e_p + CFG['ANTIGEN_WINDOW']
-        if start_position < 0:
-            start_position = 0
-        if end_position > len(antigen):
-            end_position = len(antigen)
-
-        # left / right antigen sequence 추출
-        left_antigen = antigen[int(start_position): int(s_p) - 1]
-        left_antigen = [alpha_map[x] for x in left_antigen]
-
-        right_antigen = antigen[int(e_p): int(end_position)]
-        right_antigen = [alpha_map[x] for x in right_antigen]
-
-        if CFG['EPITOPE_MAX_LEN'] < len(epitope):
-            epitope_pad[:len(epitope)] = epitope[:CFG['EPITOPE_MAX_LEN']]
-        else:
-            epitope_pad[:len(epitope)] = epitope[:]
-
-        left_antigen_pad[:len(left_antigen)] = left_antigen[:]
-        right_antigen_pad[:len(right_antigen)] = right_antigen[:]
-
-        epitope_list.append(epitope_pad)
-        left_antigen_list.append(left_antigen_pad)
-        right_antigen_list.append(right_antigen_pad)
-
-    label_list = None
-    if data_type != 'test':
-        label_list = []
-        for label in new_df['label']:
-            label_list.append(label)
-    print(f'{data_type} dataframe preprocessing was done.')
-    return epitope_list, left_antigen_list, right_antigen_list, label_list
-
-'''
-all_df = pd.read_csv('./train.csv')
-# Split Train : Validation = 0.8 : 0.2
-# train_len = int(len(all_df)*0.8)
-all_df = all_df[all_df['end_position'] - all_df['start_position'] + 1 <= 25]
-train_positive_len = int(len(all_df[all_df['label']==1])*0.8)
-train_negative_len = int(len(all_df[all_df['label']==0])*0.8)
-train_positive = all_df[all_df['label']==1]
-train_negative = all_df[all_df['label']==0]
-train_df = train_positive.iloc[:train_positive_len]
-val_df = train_positive.iloc[train_positive_len:]
-train_df = train_df.append(train_negative[:train_negative_len], ignore_index=True)
-val_df = val_df.append(train_negative[train_negative_len:], ignore_index=True)
-'''
-
-train_df = pd.read_csv('./prep_train.csv')
-val_df = pd.read_csv('./prep_validation.csv')
-
-# train_epitope_list, train_left_antigen_list, train_right_antigen_list, train_label_list = get_preprocessing('train', train_df)
-# val_epitope_list, val_left_antigen_list, val_right_antigen_list, val_label_list = get_preprocessing('val', val_df)
-train_epitope_list, train_left_antigen_list, train_right_antigen_list, train_total_antigen_list, train_label_list = get_custom_preprocessing('train', train_df)
-val_epitope_list, val_left_antigen_list, val_right_antigen_list, val_total_antigen_list, val_label_list = get_custom_preprocessing('val', val_df)
-
-class CustomDataset(Dataset):
-    def __init__(self, epitope_list, left_antigen_list, right_antigen_list, total_antigen_list, label_list):
-        self.epitope_list = epitope_list
-        self.left_antigen_list = left_antigen_list
-        self.right_antigen_list = right_antigen_list
-        self.total_antigen_list = total_antigen_list
-        self.label_list = label_list
-
-    def __getitem__(self, index):
-        self.epitope = self.epitope_list[index]
-        self.left_antigen = self.left_antigen_list[index]
-        self.right_antigen = self.right_antigen_list[index]
-        self.total_antigen = self.total_antigen_list[index]
-
-        if self.label_list is not None:
-            self.label = self.label_list[index]
-            return torch.tensor(self.epitope), torch.tensor(self.left_antigen), torch.tensor(
-                self.right_antigen), torch.tensor(self.total_antigen), self.label
-        else:
-            return torch.tensor(self.epitope), torch.tensor(self.left_antigen), torch.tensor(self.right_antigen), torch.tensor(self.total_antigen)
-
-    def __len__(self):
-        return len(self.epitope_list)
-
-train_dataset = CustomDataset(train_epitope_list, train_left_antigen_list, train_right_antigen_list, train_total_antigen_list, train_label_list)
-train_loader = DataLoader(train_dataset, batch_size = CFG['BATCH_SIZE'], shuffle=True, num_workers=CFG['NUM_WORKERS'])
-
-val_dataset = CustomDataset(val_epitope_list, val_left_antigen_list, val_right_antigen_list, val_total_antigen_list, val_label_list)
-val_loader = DataLoader(val_dataset, batch_size = CFG['BATCH_SIZE'], shuffle=False, num_workers=CFG['NUM_WORKERS'])
-
-# epitope_seq, left_antigen_seq, right_antigen_seq, label
-a,b,c,d,e = train_dataset[0]
-print(d)
-
-# epitope_seq
-print(a.shape, b.shape, c.shape, d.shape)
-
-
 class BaseModel(nn.Module):
     def __init__(self,
                  epitope_length=CFG['EPITOPE_MAX_LEN'],
@@ -249,9 +125,9 @@ class BaseModel(nn.Module):
         self.lstm_bidirect = lstm_bidirect
         # Embedding Layer
         self.total_embed = nn.Embedding(num_embeddings=27,
-                                          embedding_dim=epitope_emb_node,
-                                          padding_idx=26
-                                          ).from_pretrained(torch.Tensor(embed))
+                                        embedding_dim=epitope_emb_node,
+                                        padding_idx=26
+                                        ).from_pretrained(torch.Tensor(embed))
         '''
         self.epitope_embed = nn.Embedding(num_embeddings=27,
                                           embedding_dim=epitope_emb_node,
@@ -312,9 +188,9 @@ class BaseModel(nn.Module):
         epitope_lengths = torch.sum(epitope_x != alpha_map['<PAD>'], axis=1).type(torch.IntTensor)
         # epitope is always >0
         left_lengths = torch.sum(left_antigen_x != alpha_map['<PAD>'], axis=1).type(torch.IntTensor)
-        left_lengths += torch.where(left_lengths==0, 1, 0)
+        left_lengths += torch.where(left_lengths == 0, 1, 0)
         right_lengths = torch.sum(right_antigen_x != alpha_map['<PAD>'], axis=1).type(torch.IntTensor)
-        right_lengths += torch.where(right_lengths==0, 1, 0)
+        right_lengths += torch.where(right_lengths == 0, 1, 0)
         total_lengths = left_lengths + epitope_lengths + right_lengths
         '''
         if self.lstm_bidirect:
@@ -334,15 +210,15 @@ class BaseModel(nn.Module):
         #                                                     enforce_sorted=False)
         epitope_hidden_forward, _ = self.forlstm(epitope_x)
         epitope_hidden_forward = epitope_hidden_forward[torch.arange(epitope_hidden_forward.shape[0]),
-                         (epitope_lengths - 1).type(torch.LongTensor), :]
+                                 (epitope_lengths - 1).type(torch.LongTensor), :]
 
         left_antigen_hidden_forward, _ = self.forlstm_left(left_antigen_x)
         left_antigen_hidden_forward = left_antigen_hidden_forward[torch.arange(left_antigen_hidden_forward.shape[0]),
-                                 (left_lengths - 1).type(torch.LongTensor), :]
+                                      (left_lengths - 1).type(torch.LongTensor), :]
 
         right_antigen_hidden_forward, _ = self.forlstm_right(right_antigen_x)
         right_antigen_hidden_forward = right_antigen_hidden_forward[torch.arange(right_antigen_hidden_forward.shape[0]),
-                                      (right_lengths - 1).type(torch.LongTensor), :]
+                                       (right_lengths - 1).type(torch.LongTensor), :]
 
         '''
         total_hidden_forward, _ = self.forlstm(total_antigen_x)
@@ -356,7 +232,7 @@ class BaseModel(nn.Module):
                                      (epitope_lengths - 1).type(torch.LongTensor), :]
 
             epitope_hidden = torch.cat([epitope_hidden_forward, epitope_hidden_backward], axis=-1)
-        
+
         else:
             epitope_hidden = epitope_hidden_forward
         '''
@@ -390,88 +266,32 @@ class BaseModel(nn.Module):
         x = self.classifier(x).view(-1)
         return x
 
+class CustomDataset(Dataset):
+    def __init__(self, epitope_list, left_antigen_list, right_antigen_list, total_antigen_list, label_list):
+        self.epitope_list = epitope_list
+        self.left_antigen_list = left_antigen_list
+        self.right_antigen_list = right_antigen_list
+        self.total_antigen_list = total_antigen_list
+        self.label_list = label_list
 
-def train(model, optimizer, train_loader, val_loader, scheduler, device):
-    model.to(device)
-    criterion = nn.BCEWithLogitsLoss().to(device)
-    counter = 0
-    best_val_f1 = 0
-    for epoch in range(1, CFG['EPOCHS'] + 1):
-        model.train()
-        train_loss = []
-        for epitope_seq, left_antigen_seq, right_antigen_seq, total_antigen_seq, label in tqdm(iter(train_loader)):
-            epitope_seq = epitope_seq.to(device)
-            left_antigen_seq = left_antigen_seq.to(device)
-            right_antigen_seq = right_antigen_seq.to(device)
-            total_antigen_seq = total_antigen_seq.to(device)
-            label = label.float().to(device)
+    def __getitem__(self, index):
+        self.epitope = self.epitope_list[index]
+        self.left_antigen = self.left_antigen_list[index]
+        self.right_antigen = self.right_antigen_list[index]
+        self.total_antigen = self.total_antigen_list[index]
 
-            optimizer.zero_grad()
-
-            output = model(epitope_seq, left_antigen_seq, right_antigen_seq, total_antigen_seq)
-            loss = criterion(output, label)
-
-            loss.backward()
-            optimizer.step()
-
-            train_loss.append(loss.item())
-
-            if scheduler is not None:
-                scheduler.step()
-
-        val_loss, val_f1 = validation(model, val_loader, criterion, device)
-        print(
-            f'Epoch : [{epoch}] Train Loss : [{np.mean(train_loss):.5f}] Val Loss : [{val_loss:.5f}] Val F1 : [{val_f1:.5f}]')
-
-        if best_val_f1 < val_f1:
-            best_val_f1 = val_f1
-            torch.save(model.state_dict(), './best_model_base.pth', _use_new_zipfile_serialization=False)
-            print('Model Saved.')
-            counter=0
+        if self.label_list is not None:
+            self.label = self.label_list[index]
+            return torch.tensor(self.epitope), torch.tensor(self.left_antigen), torch.tensor(
+                self.right_antigen), torch.tensor(self.total_antigen), self.label
         else:
-            counter +=1
-            print('model not improved... counter ', counter)
-            if counter >= CFG['PATIENCE']:
-                print('early stopping')
-                break
-    return best_val_f1
+            return torch.tensor(self.epitope), torch.tensor(self.left_antigen), torch.tensor(self.right_antigen), torch.tensor(self.total_antigen)
 
-
-def validation(model, val_loader, criterion, device):
-    model.eval()
-    pred_proba_label = []
-    true_label = []
-    val_loss = []
-    with torch.no_grad():
-        for epitope_seq, left_antigen_seq, right_antigen_seq, total_antigen_seq, label in tqdm(iter(val_loader)):
-            epitope_seq = epitope_seq.to(device)
-            left_antigen_seq = left_antigen_seq.to(device)
-            right_antigen_seq = right_antigen_seq.to(device)
-            total_antigen_seq = total_antigen_seq.to(device)
-            label = label.float().to(device)
-
-            model_pred = model(epitope_seq, left_antigen_seq, right_antigen_seq, total_antigen_seq)
-            loss = criterion(model_pred, label)
-            model_pred = torch.sigmoid(model_pred).to('cpu')
-
-            pred_proba_label += model_pred.tolist()
-            true_label += label.to('cpu').tolist()
-
-            val_loss.append(loss.item())
-
-    pred_label = np.where(np.array(pred_proba_label) > CFG['THRESHOLD'], 1, 0)
-    val_f1 = f1_score(true_label, pred_label, average='macro')
-    return np.mean(val_loss), val_f1
-
-model = BaseModel()
-model.eval()
-optimizer = torch.optim.Adam(params = model.parameters(), lr = CFG["LEARNING_RATE"])
-scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=len(train_loader)*CFG['EPOCHS'], eta_min=0)
-
-best_score = train(model, optimizer, train_loader, val_loader, scheduler, device)
-print(f'Best Validation F1 Score : [{best_score:.5f}]')
+    def __len__(self):
+        return len(self.epitope_list)
 
 test_df = pd.read_csv('./test.csv')
+# test_df = test_df[test_df['end_position'] - test_df['start_position'] + 1 <= 25]
 test_epitope_list, test_left_antigen_list, test_right_antigen_list, total_antigen_list, test_label_list = get_custom_preprocessing('test', test_df)
 
 test_dataset = CustomDataset(test_epitope_list, test_left_antigen_list, test_right_antigen_list, total_antigen_list, None)
@@ -498,7 +318,7 @@ def inference(model, test_loader, device):
             model_pred = torch.sigmoid(model_pred).to('cpu')
 
             pred_proba_label += model_pred.tolist()
-
+        torch.cuda.empty_cache()
     pred_label = np.where(np.array(pred_proba_label) > CFG['THRESHOLD'], 1, 0)
     return pred_label
 

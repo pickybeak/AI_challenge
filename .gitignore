@@ -2,3 +2,7 @@
 *.csv
 *.npy
 *.pth
+*weight*/
+*temp*
+
+*pycache*
